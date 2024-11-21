@@ -22,6 +22,9 @@ from toolbench.utils import (
 
 from toolbench.inference.Downstream_tasks.base_env import base_env
 
+from fast_service import FastServiceManager, RequestContext, FastServiceFile
+
+rapidapi_fsm = FastServiceManager()
 
 # For pipeline environment preparation
 def get_white_list(tool_root_dir):
@@ -386,6 +389,192 @@ You have access of the following tools:\n'''
                     # except Exception as e:
                     #     return json.dumps({"error": f"Timeout error...{e}", "response": ""}), 5
             return json.dumps({"error": f"No such function name: {action_name}", "response": ""}), 1
+
+# Return a configuration dict
+@rapidapi_fsm.fast_service
+def pipeline_runner_initialize(args, add_retrieval=False, process_id=0, server=False):
+    args.init = True
+    task_list = pipeline_runner_generate_task_list(args) if not server else []
+    return {
+        'args': args,
+        'add_retrieval': add_retrieval,
+        'process_id': process_id,
+        'server': server,
+        'task_list': task_list
+    }
+
+def pipeline_runner_check_init(args):
+    if (not hasattr(args, "init") or (args.init != True)):
+        print("ERROR: Must call pipeline_runner_initialize() to init the pipeline runner before using it")
+        exit
+
+@rapidapi_fsm.fast_service
+def pipeline_runner_get_backbone_model(args):
+    pipeline_runner_check_init(args)
+    if args.backbone_model == "toolllama":
+        # ratio = 4 means the sequence length is expanded by 4, remember to change the model_max_length to 8192 (2048 * ratio) for ratio = 4
+        ratio = int(args.max_sequence_length/args.max_source_sequence_length)
+        replace_llama_with_condense(ratio=ratio)
+        if args.lora:
+            backbone_model = ToolLLaMALoRA(base_name_or_path=args.model_path, model_name_or_path=args.lora_path, max_sequence_length=args.max_sequence_length)
+        else:
+            backbone_model = ToolLLaMA(model_name_or_path=args.model_path, max_sequence_length=args.max_sequence_length)
+    else:
+        backbone_model = args.backbone_model
+    return backbone_model
+
+@rapidapi_fsm.fast_service
+def pipeline_runner_get_retriever(args):
+    pipeline_runner_check_init(args)
+    return ToolRetriever(corpus_tsv_path=args.corpus_tsv_path, model_path=args.retrieval_model_path)
+
+@rapidapi_fsm.fast_service
+def pipeline_runner_generate_task_list(args):
+    pipeline_runner_check_init(args)
+    query_dir = args.input_query_file
+    answer_dir = args.output_answer_file
+    if not os.path.exists(answer_dir):
+        os.mkdir(answer_dir)
+    method = args.method
+    backbone_model = pipeline_runner_get_backbone_model(args)
+    white_list = get_white_list(args.tool_root_dir)
+    task_list = []
+    querys = json.load(open(query_dir, "r"))
+    for query_id, data_dict in enumerate(querys):
+        if "query_id" in data_dict:
+            query_id = data_dict["query_id"]
+        if "api_list" in data_dict:
+            origin_tool_names = [standardize(cont["tool_name"]) for cont in data_dict["api_list"]]
+            tool_des = contain(origin_tool_names,white_list)
+            if tool_des == False:
+                continue
+            tool_des = [[cont["standard_tool_name"], cont["description"]] for cont in tool_des]
+        else:
+            tool_des = None
+        task_list.append((method, backbone_model, query_id, data_dict, args, answer_dir, tool_des))
+    return task_list
+
+@rapidapi_fsm.fast_service
+def pipeline_runner_method_converter(args, backbone_model, openai_key, method, env, process_id, single_chain_max_step=12, max_query_count=60, callbacks=None):
+    pipeline_runner_check_init(args)
+    if callbacks is None: callbacks = []
+    if backbone_model == "chatgpt_function":
+        model = "gpt-3.5-turbo-16k-0613"
+        llm_forward = ChatGPTFunction(model=model, openai_key=openai_key)
+    elif backbone_model == "davinci":
+        model = "text-davinci-003"
+        llm_forward = Davinci(model=model, openai_key=openai_key)
+    else:
+        model = backbone_model
+        llm_forward = model
+    
+    if method.startswith("CoT"):
+        passat = int(method.split("@")[-1])
+        chain = single_chain(llm=llm_forward, io_func=env,process_id=process_id)
+        result = chain.start(
+                            pass_at=passat,
+                            single_chain_max_step=single_chain_max_step,
+                            answer=1)
+    elif method.startswith("DFS"):
+        pattern = r".+_w(\d+)"
+        re_result = re.match(pattern,method)
+        assert re_result != None
+        width = int(re_result.group(1))
+        with_filter = True
+        if "woFilter" in method:
+            with_filter = False
+        chain = DFS_tree_search(llm=llm_forward, io_func=env,process_id=process_id, callbacks=callbacks)
+        result = chain.start(
+                            single_chain_max_step=single_chain_max_step,
+                            tree_beam_size = width,
+                            max_query_count = max_query_count,
+                            answer=1,
+                            with_filter=with_filter)
+    else:
+        print("invalid method")
+        raise NotImplementedError
+    return chain, result
+
+@rapidapi_fsm.fast_service
+def pipeline_runner_run_single_task(method, backbone_model, query_id, data_dict, args, output_dir_path, tool_des, server, retriever=None, process_id=0, callbacks=None):
+    # print("[SHENGYAO] Call pipeline_runner_run_single_task")
+    pipeline_runner_check_init(args)
+    # if server is None:
+    #     server = self.server
+    if callbacks is None:
+        if server: print("Warning: no callbacks are defined for server mode")
+        callbacks = []
+    # print("[SHENGYAO] output_dir_path is ", output_dir_path)
+    splits = output_dir_path.split("/")
+    os.makedirs("/".join(splits[:-1]),exist_ok=True)
+    os.makedirs("/".join(splits),exist_ok=True)
+    output_file_path = os.path.join(output_dir_path,f"{query_id}_{method}.json")
+    if (not server) and os.path.exists(output_file_path):
+        return
+    [callback.on_tool_retrieval_start() for callback in callbacks]
+    env = rapidapi_wrapper(data_dict, tool_des, retriever, args, process_id=process_id)
+    [callback.on_tool_retrieval_end(
+        tools=env.functions
+    ) for callback in callbacks]
+    query = data_dict["query"]
+    if process_id == 0:
+        print(colored(f"[process({process_id})]now playing {query}, with {len(env.functions)} APIs", "green"))
+    [callback.on_request_start(
+        user_input=query,
+        method=method,
+    ) for callback in callbacks]
+    chain,result = pipeline_runner_method_converter(
+        args=args,
+        backbone_model=backbone_model,
+        openai_key=args.openai_key,
+        method=method,
+        env=env,
+        process_id=process_id,
+        single_chain_max_step=12,
+        max_query_count=200,
+        callbacks=callbacks
+    )
+    [callback.on_request_end(
+        chain=chain.terminal_node[0].messages,
+        outputs=chain.terminal_node[0].description,
+    ) for callback in callbacks]
+    if output_dir_path is not None:
+        with open(output_file_path,"w") as writer:
+            data = chain.to_json(answer=True,process=True)
+            data["answer_generation"]["query"] = query
+            json.dump(data, writer, indent=2)
+            success = data["answer_generation"]["valid_data"] and "give_answer" in data["answer_generation"]["final_answer"]
+            print(colored(f"[process({process_id})]valid={success}", "green"))
+    return result
+
+@rapidapi_fsm.fast_service
+def pipeline_runner_run(args, task_list, add_retrieval, process_id, server):
+    # print("[SHENGYAO] Call pipeline_runner_run")
+    # Check if already initialize
+    if not args.init:
+        print("ERROR: pipeline runner doesn't initialized before use!")
+        exit()
+
+    # task_list = self.task_list
+    random.seed(42)
+    random.shuffle(task_list)
+    print(f"total tasks: {len(task_list)}")
+    new_task_list = []
+    for task in task_list:
+        out_dir_path = task[-2]
+        query_id = task[2]
+        output_file_path = os.path.join(out_dir_path,f"{query_id}_{args.method}.json")
+        if not os.path.exists(output_file_path):
+            new_task_list.append(task)
+    task_list = new_task_list
+    print(f"undo tasks: {len(task_list)}")
+    if add_retrieval:
+        retriever = pipeline_runner_get_retriever(args)
+    else:
+        retriever = None
+    for k, task in enumerate(task_list):
+        print(f"process[{process_id}] doing task {k}/{len(task_list)}: real_task_id_{task[2]}")
+        result = pipeline_runner_run_single_task(*task, server = server, retriever=retriever, process_id=process_id)
 
 
 class pipeline_runner:

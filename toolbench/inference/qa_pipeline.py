@@ -3,7 +3,7 @@ Close-domain QA Pipeline
 '''
 
 import argparse
-from toolbench.inference.Downstream_tasks.rapidapi import pipeline_runner
+from toolbench.inference.Downstream_tasks.rapidapi import *
 
 
 if __name__ == "__main__":
@@ -29,6 +29,8 @@ if __name__ == "__main__":
     
     args = parser.parse_args()
 
-    pipeline_runner = pipeline_runner(args)
-    pipeline_runner.run()
+    # pipeline_runner = pipeline_runner(args)
+    # pipeline_runner.run()
 
+    pipeline_runner_config = pipeline_runner_initialize(args)
+    pipeline_runner_run(pipeline_runner_config['args'], pipeline_runner_config['task_list'], pipeline_runner_config['add_retrieval'], pipeline_runner_config['process_id'], pipeline_runner_config['server'])

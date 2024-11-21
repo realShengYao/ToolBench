@@ -22,12 +22,15 @@ class Model:
         starting_time = time.time()
         self.args = self.get_args()
         self.pipeline = pipeline_runner(self.args, add_retrieval=False, server=True)
+        # self.pipeline_runner_config = pipeline_runner_initialize(self.args, add_retrieval=False, server=True)
         print("Loading model...")
         self.llm = self.pipeline.get_backbone_model()
+        # self.llm = pipeline_runner_get_backbone_model(self.pipeline_runner_config['args'])
         print("Model loaded in {} seconds".format(time.time() - starting_time))
         starting_time = time.time()
         print("Loading retriever...")
         self.retriever = self.pipeline.get_retriever()
+        # self.retriever = pipeline_runner_get_retriever(self.pipeline_runner_config['args'])
         print("Retriever loaded in {} seconds".format(time.time() - starting_time))
         self.query_id = 0
         # self.process_num = self.args.process_num
@@ -50,6 +53,7 @@ class Model:
             "query": user_input,
         }
         self.pipeline.run_single_task(
+        # pipeline_runner_run_single_task(
             method=method,
             backbone_model=self.llm,
             query_id=self.query_id,
