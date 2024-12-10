@@ -37,7 +37,7 @@ class ToolLLaMA:
             self.model.resize_token_embeddings(len(self.tokenizer))
         self.use_gpu = (True if device == "cuda" else False)
         if (device == "cuda" and not cpu_offloading) or device == "mps":
-            print("[SHENGYAO] Skip model.to(device) since we already use device_map")
+            print("Skip model.to(device) since we already use device_map")
             # self.model.to(device)
         self.chatio = SimpleChatIO()
 
@@ -123,22 +123,3 @@ class ToolLLaMA:
             }
         }
         return message, 0, decoded_token_len
-
-
-if __name__ == "__main__":
-    # can accept all huggingface LlamaModel family
-    llm = ToolLLaMA("decapoda-research/llama-7b-hf")
-    messages = [
-        {'role': 'system', 'content': '''You are AutoGPT, you can use many tools(functions) to do
-the following task.\nFirst I will give you the task description, and your task start.\nAt each step, you need to give your thought to analyze the status now and what to do next, with a function call to actually excute your step.\nAfter the call, you will get the call result, and you are now in a new state.\nThen you will analyze your status now, then decide what to do next...\nAfter many (Thought-call) pairs, you finally perform the task, then you can give your finial answer.\nRemember: \n1.the state change is , you can\'t go
-back to the former state, if you want to restart the task, say "I give up and restart".\n2.All the thought is short, at most in 5 sentence.\nLet\'s Begin!\nTask description: Use numbers and basic arithmetic operations (+ - * /) to obtain exactly one number=24. Each
-step, you are only allowed to choose two of the left numbers to obtain a new number. For example, you can combine [3,13,9,7] as 7*9 - 3*13 = 24.\nRemember:\n1.all of the number must be used , and must be used ONCE. So Only when left numbers is exact 24, you will win. So you don\'t succeed when left number = [24, 5]. You succeed when left number = [24]. \n2.all the try takes exactly 3 steps, look
-at the input format'''}, 
-{'role': 'user', 'content': '\nThe real task input is: [1, 2, 4, 7]\nBegin!\n'}
-]
-    functions = [{'name': 'play_24', 'description': '''make your current conbine with the format "x operation y = z (left: aaa) " like "1+2=3, (left: 3 5 7)", then I will tell you whether you win. This is the ONLY way
-to interact with the game, and the total process of a input use 3 steps of call, each step you can only combine 2 of the left numbers, so the count of left numbers decrease from 4 to 1''','parameters':{'type': 'object', 'properties':{}}}]#, 'parameters': {'type': 'object', 'properties': {'input': {'type': 'string', 'description': 'describe what number you want to conbine, and how to conbine.'}}, 'required': ['input']}}]
-
-    llm.change_messages(messages)
-    output = llm.parse(functions=functions)
-    print(output)

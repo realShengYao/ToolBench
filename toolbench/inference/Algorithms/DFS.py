@@ -337,7 +337,7 @@ class DFS_tree_search(base_search_method):
             zip_value = list(
                 zip(next_tree_split_nodes, range(len(next_tree_split_nodes))))
             zip_value.sort(
-                key=lambda x: x[0].prior_score, reverse=True)  # 先做score高的
+                key=lambda x: x[0].prior_score, reverse=True)
             next_tree_split_nodes, filtered_order = zip(*zip_value)
             # if self.process_id == 0:
             #     print(f"score={scores}, filtered order: {filtered_order}")

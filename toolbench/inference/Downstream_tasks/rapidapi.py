@@ -439,7 +439,15 @@ def pipeline_runner_generate_task_list(args):
     backbone_model = pipeline_runner_get_backbone_model(args)
     white_list = get_white_list(args.tool_root_dir)
     task_list = []
-    querys = json.load(open(query_dir, "r"))
+
+    if query_dir.endswith(".json"):
+        querys = json.load(open(query_dir, "r"))
+    elif query_dir.endswith(".txt"):
+        with open(query_dir, "r") as f:
+            querys = [json.loads(line.strip()) for line in f if line.strip()]
+    else:
+        raise ValueError(f"Unsupported file type: {query_dir}")
+
     for query_id, data_dict in enumerate(querys):
         if "query_id" in data_dict:
             query_id = data_dict["query_id"]
